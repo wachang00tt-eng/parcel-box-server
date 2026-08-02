@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: parcel-box-server
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
