@@ -10,21 +10,12 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 
 // =====================================================
-// ตัวแปรสถานะระบบ
+// สถานะระบบ
 // =====================================================
 
-// จำนวนพัสดุที่รับตั้งแต่ Server เริ่มทำงาน
 let parcelCount = 0;
-
-// สถานะกล่อง
-// false = ว่าง
-// true  = มีพัสดุ
 let parcelPresent = false;
-
-// ระยะล่าสุดที่ ESP32 ส่งมา
 let lastDistance = 0;
-
-// เวลาที่พบพัสดุล่าสุด
 let lastParcelTime = null;
 
 
@@ -48,7 +39,6 @@ app.get("/health", (req, res) => {
   res.json({
 
     status: "OK",
-
     server: "Parcel Box V3",
 
     parcelPresent: parcelPresent,
@@ -65,16 +55,58 @@ app.get("/health", (req, res) => {
 
 
 // =====================================================
+// ฟังก์ชันส่งข้อความ LINE
+// =====================================================
+
+async function sendLineMessage(text) {
+
+  await axios.post(
+
+    "https://api.line.me/v2/bot/message/push",
+
+    {
+
+      to: process.env.USER_ID,
+
+      messages: [
+
+        {
+
+          type: "text",
+          text: text
+
+        }
+
+      ]
+
+    },
+
+    {
+
+      headers: {
+
+        Authorization:
+          `Bearer ${process.env.CHANNEL_ACCESS_TOKEN}`,
+
+        "Content-Type":
+          "application/json"
+
+      }
+
+    }
+
+  );
+
+}
+
+
+// =====================================================
 // รับข้อมูลจาก ESP32
 // =====================================================
 
 app.post("/webhook", async (req, res) => {
 
   try {
-
-    // =================================================
-    // รับข้อมูลจาก ESP32
-    // =================================================
 
     const message =
       req.body.message || "พบพัสดุใหม่";
@@ -94,19 +126,17 @@ app.post("/webhook", async (req, res) => {
     console.log("--------------------------------");
 
 
-    // =================================================
     // อัปเดตสถานะ
-    // =================================================
 
     parcelPresent = true;
 
     lastDistance = distance;
 
-    lastParcelTime =
-      new Date().toISOString();
+    lastParcelTime = new Date().toISOString();
 
 
-    // ใช้จำนวนจาก ESP32 ถ้ามี
+    // อัปเดตจำนวน
+
     if (count > parcelCount) {
 
       parcelCount = count;
@@ -119,9 +149,7 @@ app.post("/webhook", async (req, res) => {
     }
 
 
-    // =================================================
     // เวลาไทย
-    // =================================================
 
     const thaiTime =
       new Date().toLocaleString(
@@ -132,9 +160,7 @@ app.post("/webhook", async (req, res) => {
       );
 
 
-    // =================================================
-    // สร้างข้อความ LINE
-    // =================================================
+    // ข้อความแจ้งเตือน
 
     const text =
 `📦 แจ้งเตือนพัสดุใหม่
@@ -155,17 +181,263 @@ app.post("/webhook", async (req, res) => {
 Parcel Box V3`;
 
 
-    // =================================================
-    // ส่งข้อความไป LINE
-    // =================================================
+    await sendLineMessage(text);
+
+
+    console.log("✅ LINE SENT SUCCESS");
+
+
+    res.json({
+
+      success: true,
+
+      parcelCount: parcelCount,
+
+      parcelPresent: parcelPresent
+
+    });
+
+
+  }
+
+  catch (error) {
+
+    console.log(
+      "❌ ERROR :",
+      error.response?.data ||
+      error.message
+    );
+
+
+    res.status(500).json({
+
+      success: false,
+
+      error:
+        error.response?.data ||
+        error.message
+
+    });
+
+  }
+
+});
+
+
+// =====================================================
+// รับข้อความจาก LINE
+// =====================================================
+
+app.post("/line-webhook", async (req, res) => {
+
+  try {
+
+    console.log(
+      "LINE EVENT :",
+      JSON.stringify(req.body)
+    );
+
+
+    // ตอบ LINE ก่อน
+    res.status(200).send("OK");
+
+
+    // ตรวจสอบ Event
+
+    if (!req.body.events) {
+
+      return;
+
+    }
+
+
+    for (const event of req.body.events) {
+
+      // รับเฉพาะข้อความ
+
+      if (
+        event.type !== "message" ||
+        event.message.type !== "text"
+      ) {
+
+        continue;
+
+      }
+
+
+      const userText =
+        event.message.text.trim();
+
+
+      console.log(
+        "LINE MESSAGE :",
+        userText
+      );
+
+
+      // =================================================
+      // คำสั่ง "สถานะ"
+      // =================================================
+
+      if (userText === "สถานะ") {
+
+        const status =
+          parcelPresent
+            ? "มีพัสดุ 📦"
+            : "กล่องว่าง 📭";
+
+
+        const thaiTime =
+          lastParcelTime
+            ? new Date(lastParcelTime)
+                .toLocaleString(
+                  "th-TH",
+                  {
+                    timeZone: "Asia/Bangkok"
+                  }
+                )
+            : "ยังไม่มีข้อมูล";
+
+
+        const text =
+`📦 สถานะ Parcel Box
+━━━━━━━━━━━━━━━━
+
+สถานะ : ${status}
+
+📦 จำนวนพัสดุ : ${parcelCount} ชิ้น
+
+📏 ระยะล่าสุด : ${lastDistance.toFixed(1)} cm
+
+🕐 รับพัสดุล่าสุด :
+${thaiTime}
+
+🌐 Server : Online
+
+━━━━━━━━━━━━━━━━
+Parcel Box V3`;
+
+
+        await replyLineMessage(
+          event.replyToken,
+          text
+        );
+
+      }
+
+
+      // =================================================
+      // คำสั่ง "จำนวน"
+      // =================================================
+
+      else if (userText === "จำนวน") {
+
+        const text =
+`📦 จำนวนพัสดุ
+
+วันนี้รับแล้ว :
+${parcelCount} ชิ้น`;
+
+
+        await replyLineMessage(
+          event.replyToken,
+          text
+        );
+
+      }
+
+
+      // =================================================
+      // คำสั่ง "รีเซ็ต"
+      // =================================================
+
+      else if (userText === "รีเซ็ต") {
+
+        parcelCount = 0;
+
+        const text =
+`🔄 รีเซ็ตเรียบร้อยแล้ว
+
+📦 จำนวนพัสดุ :
+0 ชิ้น
+
+พร้อมรับพัสดุใหม่ครับ 📦`;
+
+
+        await replyLineMessage(
+          event.replyToken,
+          text
+        );
+
+      }
+
+
+      // =================================================
+      // คำสั่ง "ช่วยเหลือ"
+      // =================================================
+
+      else if (userText === "ช่วยเหลือ") {
+
+        const text =
+`🤖 Parcel Box V3
+
+คำสั่งที่ใช้ได้:
+
+📦 สถานะ
+ดูสถานะกล่อง
+
+🔢 จำนวน
+ดูจำนวนพัสดุ
+
+🔄 รีเซ็ต
+รีเซ็ตจำนวนพัสดุ
+
+❓ ช่วยเหลือ
+ดูคำสั่งทั้งหมด`;
+
+
+        await replyLineMessage(
+          event.replyToken,
+          text
+        );
+
+      }
+
+    }
+
+  }
+
+  catch (error) {
+
+    console.log(
+      "LINE WEBHOOK ERROR :",
+      error.response?.data ||
+      error.message
+    );
+
+  }
+
+});
+
+
+// =====================================================
+// Reply Message ไป LINE
+// =====================================================
+
+async function replyLineMessage(
+  replyToken,
+  text
+) {
+
+  try {
 
     await axios.post(
 
-      "https://api.line.me/v2/bot/message/push",
+      "https://api.line.me/v2/bot/message/reply",
 
       {
 
-        to: process.env.USER_ID,
+        replyToken: replyToken,
 
         messages: [
 
@@ -198,86 +470,23 @@ Parcel Box V3`;
     );
 
 
-    console.log("✅ LINE SENT SUCCESS");
-
-
-    // =================================================
-    // ตอบกลับ ESP32
-    // =================================================
-
-    res.json({
-
-      success: true,
-
-      message: "LINE notification sent",
-
-      parcelCount: parcelCount,
-
-      parcelPresent: parcelPresent
-
-    });
-
+    console.log(
+      "✅ LINE REPLY SENT"
+    );
 
   }
 
   catch (error) {
 
-
-    // =================================================
-    // แสดง Error
-    // =================================================
-
     console.log(
-      "❌ ERROR :",
+      "❌ REPLY ERROR :",
       error.response?.data ||
       error.message
     );
 
-
-    res.status(500).json({
-
-      success: false,
-
-      error:
-        error.response?.data ||
-        error.message
-
-    });
-
   }
 
-});
-
-
-// =====================================================
-// LINE Webhook
-// =====================================================
-
-app.post("/line-webhook", async (req, res) => {
-
-  try {
-
-    console.log(
-      "LINE EVENT :",
-      JSON.stringify(req.body)
-    );
-
-
-    // LINE ต้องการ HTTP 200
-    res.status(200).send("OK");
-
-
-  }
-
-  catch (error) {
-
-    console.log(error);
-
-    res.status(200).send("OK");
-
-  }
-
-});
+}
 
 
 // =====================================================
